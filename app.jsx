@@ -1,0 +1,782 @@
+// ============================================================
+//  TacLoRa — full app.jsx
+//  Paste this file into your taclora-app/ folder
+// ============================================================
+
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ─── Mock data (replaced by live BLE data when connected) ───
+const MOCK_NODES = [
+  { id: "0x00000208", lat: -22.869036, lon: -43.136280, alt: 17, speed: 1,  heading: 45,  sats: 8, pdop: 1.2, rssi: -65, hops: 0, lastSeen: 5  },
+  { id: "0x00000248", lat: -22.871500, lon: -43.139100, alt: 22, speed: 0,  heading: 0,   sats: 6, pdop: 1.8, rssi: -82, hops: 1, lastSeen: 12 },
+  { id: "0x00000312", lat: -22.866800, lon: -43.133500, alt: 14, speed: 3,  heading: 180, sats: 9, pdop: 1.1, rssi: -71, hops: 0, lastSeen: 3  },
+];
+
+const MOCK_MESSAGES = [
+  { id: 1, from: "0x00000248", to: "ALL",          text: "Posição confirmada, setor norte.", time: "14:32" },
+  { id: 2, from: "0x00000312", to: "ALL",          text: "Movendo para sul, ETA 5min.",      time: "14:35" },
+  { id: 3, from: "ME",         to: "ALL",          text: "Recebido. Aguardando confirmação.", time: "14:36" },
+  { id: 4, from: "0x00000248", to: "ME",           text: "Confirmado. Rota clara.",           time: "14:38" },
+];
+
+// ─── Helpers ────────────────────────────────────────────────
+const rssiColor  = r => r > -70 ? "#00ff88" : r > -90 ? "#ffd700" : "#ff4444";
+const rssiLabel  = r => r > -70 ? "EXCELENTE" : r > -90 ? "BOM" : "FRACO";
+const fixColor   = s => s >= 7  ? "#00ff88" : s >= 4   ? "#ffd700" : "#ff4444";
+const fixLabel   = s => s >= 7  ? "FIX 3D"  : s >= 4   ? "FIX 2D"  : "SEM FIX";
+const now8       = ()  => new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+// ─── BLE UUIDs (must match firmware) ────────────────────────
+const BLE_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const BLE_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";  // notify  (device → app)
+const BLE_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";  // write   (app → device)
+
+// ════════════════════════════════════════════════════════════
+//  MAP VIEW  (Leaflet + OpenStreetMap)
+// ════════════════════════════════════════════════════════════
+function MapView({ nodes, selectedNode, onSelectNode, myPos }) {
+  const mapDivRef   = useRef(null);
+  const leaflet     = useRef(null);
+  const markersRef  = useRef({});
+  const myMarker    = useRef(null);
+  const linesRef    = useRef([]);
+
+  // SVG marker icon
+  const makeIcon = (color, isMe = false, heading = null) => {
+    const r   = isMe ? 14 : 10;
+    const cx  = 24, cy = 24, size = 48;
+    let arrow = "";
+    if (heading !== null && !isMe) {
+      const rad = (heading - 90) * Math.PI / 180;
+      const x2  = cx + Math.cos(rad) * 22;
+      const y2  = cy + Math.sin(rad) * 22;
+      arrow = `<line x1="${cx}" y1="${cy}" x2="${x2}" y2="${y2}"
+                     stroke="${color}" stroke-width="2.5" stroke-linecap="round"/>
+               <circle cx="${x2}" cy="${y2}" r="3" fill="${color}"/>`;
+    }
+    const pulse = isMe
+      ? `<circle cx="${cx}" cy="${cy}" r="${r + 7}" fill="none"
+                 stroke="${color}" stroke-width="1" stroke-dasharray="3 3" opacity="0.5"/>`
+      : "";
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg"
+                      width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+                   ${pulse}${arrow}
+                   <circle cx="${cx}" cy="${cy}" r="${r}"
+                           fill="${color}28" stroke="${color}" stroke-width="2.5"/>
+                   <circle cx="${cx}" cy="${cy}" r="4" fill="${color}"/>
+                 </svg>`;
+    return L.divIcon({
+      html: svg, className: "",
+      iconSize:   [size, size],
+      iconAnchor: [cx, cy],
+      popupAnchor:[0, -(r + 8)],
+    });
+  };
+
+  const popupHTML = (n) => `
+    <div style="font-family:'Share Tech Mono',monospace;line-height:1.7;font-size:11px">
+      <b style="color:${rssiColor(n.rssi)};letter-spacing:2px;font-size:13px">NÓ ${n.id.slice(-3)}</b>
+      <div style="color:#4a6a5a;font-size:9px;margin-bottom:6px">${n.id}</div>
+      <span style="color:#4a6a5a">LAT </span>${n.lat.toFixed(6)}°<br/>
+      <span style="color:#4a6a5a">LON </span>${n.lon.toFixed(6)}°<br/>
+      <span style="color:#4a6a5a">ALT </span>${n.alt}m
+      &nbsp;&nbsp;<span style="color:#4a6a5a">SPD </span>${n.speed}km/h<br/>
+      <span style="color:#4a6a5a">HDG </span>${n.heading}°
+      &nbsp;&nbsp;<span style="color:#4a6a5a">SATS </span>${n.sats === 255 ? "FIXO" : n.sats}<br/>
+      <span style="color:#4a6a5a">RSSI </span><span style="color:${rssiColor(n.rssi)}">${n.rssi}dBm — ${rssiLabel(n.rssi)}</span><br/>
+      <span style="color:#4a6a5a">HOPS </span>${n.hops}
+      &nbsp;&nbsp;<span style="color:#4a6a5a">PDOP </span>${n.pdop}<br/>
+      <span style="color:#4a6a5a">FIX  </span><span style="color:${fixColor(n.sats)}">${fixLabel(n.sats)}</span>
+    </div>`;
+
+  // Init Leaflet once
+  useEffect(() => {
+    if (leaflet.current || !mapDivRef.current) return;
+    const center = myPos ? [myPos.lat, myPos.lon] : [-22.869, -43.136];
+
+    leaflet.current = L.map(mapDivRef.current, {
+      center, zoom: 16, zoomControl: true, attributionControl: true,
+    });
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap contributors", maxZoom: 19,
+    }).addTo(leaflet.current);
+
+    return () => { leaflet.current?.remove(); leaflet.current = null; };
+  }, []);
+
+  // Redraw markers & lines on node changes
+  useEffect(() => {
+    if (!leaflet.current) return;
+    const map = leaflet.current;
+
+    // Clear lines
+    linesRef.current.forEach(l => l.remove());
+    linesRef.current = [];
+
+    // My marker
+    if (myPos) {
+      if (myMarker.current) {
+        myMarker.current.setLatLng([myPos.lat, myPos.lon]);
+      } else {
+        myMarker.current = L.marker([myPos.lat, myPos.lon], {
+          icon: makeIcon("#00aaff", true), zIndexOffset: 1000,
+        }).addTo(map).bindPopup(`
+          <div style="font-family:'Share Tech Mono',monospace;font-size:11px">
+            <b style="color:#00aaff;letter-spacing:2px">YOU</b><br/>
+            ${myPos.lat.toFixed(6)}, ${myPos.lon.toFixed(6)}
+          </div>`);
+      }
+
+      // Lines from me to each node
+      nodes.forEach(n => {
+        if (!n.lat || !n.lon) return;
+        const line = L.polyline(
+          [[myPos.lat, myPos.lon], [n.lat, n.lon]],
+          { color: rssiColor(n.rssi), weight: 1.5, opacity: 0.3, dashArray: "5 9" }
+        ).addTo(map);
+        linesRef.current.push(line);
+      });
+    }
+
+    // Node markers
+    nodes.forEach(n => {
+      if (!n.lat || !n.lon) return;
+      const icon = makeIcon(rssiColor(n.rssi), false, n.speed > 0 ? n.heading : null);
+
+      if (markersRef.current[n.id]) {
+        markersRef.current[n.id]
+          .setLatLng([n.lat, n.lon])
+          .setIcon(icon)
+          .setPopupContent(popupHTML(n));
+      } else {
+        markersRef.current[n.id] = L.marker([n.lat, n.lon], { icon })
+          .addTo(map)
+          .bindPopup(popupHTML(n))
+          .on("click", () => onSelectNode(n));
+      }
+    });
+
+    // Remove stale markers
+    Object.keys(markersRef.current).forEach(id => {
+      if (!nodes.find(n => n.id === id)) {
+        markersRef.current[id].remove();
+        delete markersRef.current[id];
+      }
+    });
+  }, [nodes, myPos]);
+
+  // Pan + open popup on selection
+  useEffect(() => {
+    if (!selectedNode || !leaflet.current) return;
+    leaflet.current.setView([selectedNode.lat, selectedNode.lon], 17, { animate: true });
+    markersRef.current[selectedNode.id]?.openPopup();
+  }, [selectedNode]);
+
+  return <div ref={mapDivRef} style={{ width: "100%", height: "100%" }} />;
+}
+
+// ════════════════════════════════════════════════════════════
+//  ROOT APP
+// ════════════════════════════════════════════════════════════
+function TacLoRa() {
+  const [tab,          setTab]          = useState("map");
+  const [nodes,        setNodes]        = useState(MOCK_NODES);
+  const [messages,     setMessages]     = useState(MOCK_MESSAGES);
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [chatTarget,   setChatTarget]   = useState("ALL");
+  const [input,        setInput]        = useState("");
+  const [connected,    setConnected]    = useState(false);
+  const [bleStatus,    setBleStatus]    = useState("DESCONECTADO");
+  const [bleDevice,    setBleDevice]    = useState(null);
+  const [myPos,        setMyPos]        = useState({ lat: -22.869036, lon: -43.136280 });
+
+  const bleRxChar  = useRef(null);
+  const chatEndRef = useRef(null);
+
+  // Auto-scroll chat
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  // ── BLE ──────────────────────────────────────────────────
+  const connectBLE = async () => {
+    if (!navigator.bluetooth) { setBleStatus("BLE NÃO SUPORTADO"); return; }
+    try {
+      setBleStatus("CONECTANDO...");
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: "TacLoRa" }],
+        optionalServices: [BLE_SERVICE],
+      });
+      const server  = await device.gatt.connect();
+      const service = await server.getPrimaryService(BLE_SERVICE);
+      const txChar  = await service.getCharacteristic(BLE_TX_UUID);
+      bleRxChar.current = await service.getCharacteristic(BLE_RX_UUID);
+
+      await txChar.startNotifications();
+      txChar.addEventListener("characteristicvaluechanged", e => {
+        const line = new TextDecoder().decode(e.target.value);
+        parseIncoming(line);
+      });
+
+      device.addEventListener("gattserverdisconnected", () => {
+        setConnected(false); setBleStatus("DESCONECTADO");
+        setBleDevice(null);  bleRxChar.current = null;
+      });
+
+      setBleDevice(device);
+      setConnected(true);
+      setBleStatus(device.name);
+    } catch (err) {
+      setBleStatus("ERRO: " + err.message.slice(0, 28));
+      setConnected(false);
+    }
+  };
+
+  const disconnectBLE = () => {
+    bleDevice?.gatt?.disconnect();
+    setConnected(false); setBleStatus("DESCONECTADO");
+    setBleDevice(null);  bleRxChar.current = null;
+  };
+
+  const sendBLE = async (cmd) => {
+    if (!bleRxChar.current) return;
+    try {
+      await bleRxChar.current.writeValue(new TextEncoder().encode(cmd + "\n"));
+    } catch (e) { console.error("BLE write:", e); }
+  };
+
+  // ── Parse firmware tacLog lines ───────────────────────────
+  const parseIncoming = useCallback((raw) => {
+    raw.split("\n").forEach(line => {
+      line = line.trim();
+
+      // [GPS] 0xSRCID RSSI:-XXdBm Lat:X Lon:X Alt:Xm Hdg:X° Spd:Xkm/h Sats:X PDOP:X
+      const gpsMatch = line.match(
+        /\[GPS\]\s+(0x\w+)\s+\w+:(-?\d+)dBm\s+Lat:([-\d.]+)\s+Lon:([-\d.]+)\s+Alt:(-?\d+)m\s+Hdg:([\d.]+)°\s+Spd:(\d+)km\/h\s+Sats:(\d+)\s+PDOP:([\d.]+)/
+      );
+      if (gpsMatch) {
+        const [, id, rssi, lat, lon, alt, hdg, spd, sats, pdop] = gpsMatch;
+        setNodes(prev => {
+          const existing = prev.find(n => n.id === id);
+          const updated  = {
+            id,
+            lat:     parseFloat(lat),
+            lon:     parseFloat(lon),
+            alt:     parseInt(alt),
+            heading: parseFloat(hdg),
+            speed:   parseInt(spd),
+            sats:    parseInt(sats),
+            pdop:    parseFloat(pdop),
+            rssi:    parseInt(rssi),
+            hops:    existing?.hops    ?? 0,
+            lastSeen: 0,
+          };
+          return existing
+            ? prev.map(n => n.id === id ? updated : n)
+            : [...prev, updated];
+        });
+      }
+
+      // [PING] From 0xSRCID RSSI:-XXdBm Hops:X
+      const pingMatch = line.match(/\[PING\]\s+From\s+(0x\w+)\s+\w+:(-?\d+)dBm\s+Hops:(\d+)/);
+      if (pingMatch) {
+        const [, id, rssi, hops] = pingMatch;
+        setNodes(prev => prev.map(n =>
+          n.id === id ? { ...n, rssi: parseInt(rssi), hops: parseInt(hops), lastSeen: 0 } : n
+        ));
+      }
+
+      // [DATA] From 0xSRCID RSSI:-XXdBm: <message>
+      const dataMatch = line.match(/\[DATA\]\s+From\s+(0x\w+)\s+RSSI:(-?\d+)dBm:\s+(.+)/);
+      if (dataMatch) {
+        const [, from, , text] = dataMatch;
+        setMessages(prev => [...prev, { id: Date.now(), from, to: "ME", text: text.trim(), time: now8() }]);
+      }
+
+      // [STATUS] MEU DISPOSITIVO: TacLoRa-0xXXXX  →  extract my own node pos if present
+      // [TX] GPS broadcasted (fixed=0): lat, lon
+      const txMatch = line.match(/\[TX\]\s+GPS broadcasted[^:]*:\s+([-\d.]+),\s+([-\d.]+)/);
+      if (txMatch) {
+        setMyPos({ lat: parseFloat(txMatch[1]), lon: parseFloat(txMatch[2]) });
+      }
+    });
+  }, []);
+
+  // ── Send chat message ─────────────────────────────────────
+  const sendMessage = () => {
+    const text = input.trim();
+    if (!text) return;
+    const cmd = chatTarget === "ALL"
+      ? `broadcast ${text}`
+      : `send ${chatTarget.slice(-3)} ${text}`;
+    sendBLE(cmd);
+    setMessages(prev => [...prev, { id: Date.now(), from: "ME", to: chatTarget, text, time: now8() }]);
+    setInput("");
+  };
+
+  // ── Serial command shortcut ───────────────────────────────
+  const sendCmd = (cmd) => { sendBLE(cmd); };
+
+  // Filtered messages for current chat target
+  const filteredMessages = chatTarget === "ALL"
+    ? messages
+    : messages.filter(m =>
+        m.from === chatTarget || m.to === chatTarget ||
+        (m.from === "ME" && m.to === chatTarget)
+      );
+
+  // ── Shared styles ─────────────────────────────────────────
+  const S = {
+    btn: (active, color = "#00ff88") => ({
+      background:  active ? color + "18" : "transparent",
+      border:      `1px solid ${active ? color : color + "30"}`,
+      color:       active ? color : "#4a6a5a",
+      padding:     "4px 10px", fontSize: 9, letterSpacing: 2,
+      cursor:      "pointer", borderRadius: 2, fontFamily: "inherit",
+    }),
+    label: { color: "#4a6a5a", fontSize: 9, letterSpacing: 1 },
+    value: { color: "#c8d8c0", fontSize: 9 },
+  };
+
+  // ════════════════════════════════════════════════════════════
+  return (
+    <div style={{
+      fontFamily:  "'Share Tech Mono','Courier New',monospace",
+      background:  "#080c10",
+      color:       "#c8d8c0",
+      height:      "100vh",
+      display:     "flex",
+      flexDirection: "column",
+      overflow:    "hidden",
+      maxWidth:    480,
+      margin:      "0 auto",
+    }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@500;700&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: #0d1418; }
+        ::-webkit-scrollbar-thumb { background: #00ff8844; border-radius: 2px; }
+        .leaflet-container        { background: #0d1a14 !important; }
+        .leaflet-tile             { filter: invert(1) hue-rotate(180deg) brightness(0.85) saturate(0.6); }
+        .leaflet-popup-content-wrapper {
+          background: #0a0f14; border: 1px solid #00ff8840;
+          color: #c8d8c0; border-radius: 2px; box-shadow: 0 4px 24px #000a;
+        }
+        .leaflet-popup-tip            { background: #0a0f14; }
+        .leaflet-popup-close-button   { color: #00ff88 !important; font-size: 16px !important; }
+        .leaflet-control-zoom a       { background: #0a0f14 !important; color: #00ff88 !important; border-color: #00ff8830 !important; }
+        .leaflet-control-attribution  { background: #080c10cc !important; color: #4a6a5a !important; font-size: 8px !important; }
+        @keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes blink  { 0%,100%{opacity:1} 50%{opacity:0.3} }
+        input:focus { outline: none; border-color: #00ff8880 !important; }
+      `}</style>
+
+      {/* ── HEADER ─────────────────────────────────────────── */}
+      <div style={{
+        padding: "10px 14px 8px", borderBottom: "1px solid #00ff8820",
+        background: "#0a0f14", display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        <div>
+          <div style={{ fontSize: 15, color: "#00ff88", letterSpacing: 4, fontFamily: "Rajdhani,sans-serif", fontWeight: 700 }}>
+            ◈ TACLORA
+          </div>
+          <div style={{ fontSize: 8, color: "#4a6a5a", letterSpacing: 3 }}>MESH TACTICAL NETWORK</div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <button onClick={connected ? disconnectBLE : connectBLE} style={S.btn(connected)}>
+            {connected ? "● ONLINE" : "○ CONECTAR"}
+          </button>
+          <div style={{ fontSize: 8, color: "#4a6a5a", marginTop: 3, letterSpacing: 1,
+                        animation: connected ? "none" : "blink 2s infinite" }}>
+            {bleStatus}
+          </div>
+        </div>
+      </div>
+
+      {/* ── NODE STRIP ─────────────────────────────────────── */}
+      <div style={{
+        display: "flex", gap: 6, padding: "6px 14px", overflowX: "auto",
+        borderBottom: "1px solid #00ff8812", background: "#090d12",
+        scrollbarWidth: "none",
+      }}>
+        {nodes.map(n => (
+          <div key={n.id}
+            onClick={() => { setSelectedNode(n); setTab("map"); }}
+            style={{
+              flex: "0 0 auto", cursor: "pointer",
+              border: `1px solid ${rssiColor(n.rssi)}${selectedNode?.id === n.id ? "cc" : "44"}`,
+              background: selectedNode?.id === n.id ? rssiColor(n.rssi) + "14" : "transparent",
+              padding: "4px 8px", borderRadius: 2, minWidth: 72,
+              animation: "fadeIn 0.3s ease",
+            }}>
+            <div style={{ fontSize: 9, color: rssiColor(n.rssi), letterSpacing: 1 }}>
+              {n.hops === 0 ? "◉" : "◎"} {n.id.slice(-3)}
+            </div>
+            <div style={{ fontSize: 8, color: "#4a6a5a" }}>{n.rssi}dBm</div>
+            <div style={{ fontSize: 8, color: fixColor(n.sats) }}>{fixLabel(n.sats)}</div>
+          </div>
+        ))}
+        {nodes.length === 0 && (
+          <div style={{ fontSize: 9, color: "#4a6a5a", padding: "4px 0", animation: "blink 2s infinite" }}>
+            aguardando nós...
+          </div>
+        )}
+      </div>
+
+      {/* ── TAB BAR ────────────────────────────────────────── */}
+      <div style={{ display: "flex", borderBottom: "1px solid #00ff8820", background: "#0a0f14" }}>
+        {[["map","◈ MAPA"],["chat","▦ CHAT"],["nodes","◎ NÓS"],["cmd","⌘ CMD"]].map(([key,label]) => (
+          <button key={key} onClick={() => setTab(key)} style={{
+            flex: 1, padding: "8px 2px", fontSize: 9, letterSpacing: 2,
+            background: tab === key ? "#00ff8810" : "transparent",
+            color:      tab === key ? "#00ff88"   : "#4a6a5a",
+            border: "none",
+            borderBottom: tab === key ? "2px solid #00ff88" : "2px solid transparent",
+            cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s",
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {/* ── CONTENT ────────────────────────────────────────── */}
+      <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+
+        {/* ══ MAP ══════════════════════════════════════════════ */}
+        {tab === "map" && (
+          <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+            <div style={{ flex: 1, overflow: "hidden" }}>
+              <MapView
+                nodes={nodes}
+                selectedNode={selectedNode}
+                onSelectNode={setSelectedNode}
+                myPos={myPos}
+              />
+            </div>
+
+            {/* Selected node panel */}
+            {selectedNode && (
+              <div style={{
+                padding: "10px 14px", borderTop: "1px solid #00ff8820",
+                background: "#0a0f14", animation: "fadeIn 0.2s ease",
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, color: rssiColor(selectedNode.rssi),
+                                  fontFamily: "Rajdhani,sans-serif", fontWeight: 700, letterSpacing: 2 }}>
+                      NÓ {selectedNode.id.slice(-3)}
+                    </div>
+                    <div style={{ fontSize: 8, color: "#4a6a5a", marginBottom: 6 }}>{selectedNode.id}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "3px 12px" }}>
+                      {[
+                        ["LAT",  selectedNode.lat.toFixed(6) + "°"],
+                        ["LON",  selectedNode.lon.toFixed(6) + "°"],
+                        ["ALT",  selectedNode.alt + "m"],
+                        ["SPD",  selectedNode.speed + "km/h"],
+                        ["HDG",  selectedNode.heading + "°"],
+                        ["RSSI", selectedNode.rssi + "dBm"],
+                        ["SATS", selectedNode.sats === 255 ? "FIXO" : selectedNode.sats],
+                        ["PDOP", selectedNode.pdop],
+                        ["HOPS", selectedNode.hops],
+                      ].map(([k, v]) => (
+                        <div key={k}>
+                          <div style={S.label}>{k}</div>
+                          <div style={S.value}>{v}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5, marginLeft: 10 }}>
+                    <button onClick={() => { setChatTarget(selectedNode.id); setTab("chat"); }}
+                            style={S.btn(true)}>▦ CHAT</button>
+                    <button onClick={() => setSelectedNode(null)}
+                            style={S.btn(false)}>✕ FECHAR</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══ CHAT ═════════════════════════════════════════════ */}
+        {tab === "chat" && (
+          <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+
+            {/* Target strip */}
+            <div style={{
+              display: "flex", gap: 6, padding: "8px 14px", overflowX: "auto",
+              borderBottom: "1px solid #00ff8812", background: "#090d12",
+              scrollbarWidth: "none",
+            }}>
+              {["ALL", ...nodes.map(n => n.id)].map(id => (
+                <button key={id} onClick={() => setChatTarget(id)}
+                  style={{
+                    ...S.btn(chatTarget === id),
+                    flex: "0 0 auto", padding: "3px 9px",
+                  }}>
+                  {id === "ALL" ? "◈ TODOS" : id.slice(-3)}
+                </button>
+              ))}
+            </div>
+
+            {/* Messages */}
+            <div style={{
+              flex: 1, overflowY: "auto", padding: "12px 14px",
+              display: "flex", flexDirection: "column", gap: 10,
+            }}>
+              {filteredMessages.length === 0 && (
+                <div style={{ color: "#4a6a5a", fontSize: 10, textAlign: "center", marginTop: 40 }}>
+                  sem mensagens
+                </div>
+              )}
+              {filteredMessages.map(msg => {
+                const isMe   = msg.from === "ME";
+                const nColor = isMe ? "#00ff88"
+                  : rssiColor(nodes.find(n => n.id === msg.from)?.rssi ?? -120);
+                return (
+                  <div key={msg.id} style={{
+                    display: "flex", flexDirection: isMe ? "row-reverse" : "row",
+                    gap: 8, animation: "fadeIn 0.2s ease",
+                  }}>
+                    {!isMe && (
+                      <div style={{
+                        width: 30, height: 30, borderRadius: "50%", flexShrink: 0,
+                        background: nColor + "18", border: `1px solid ${nColor}44`,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: 8, color: nColor,
+                      }}>{msg.from.slice(-3)}</div>
+                    )}
+                    <div style={{ maxWidth: "72%" }}>
+                      {!isMe && (
+                        <div style={{ fontSize: 8, color: "#4a6a5a", marginBottom: 2, letterSpacing: 1 }}>
+                          {msg.from}
+                        </div>
+                      )}
+                      <div style={{
+                        padding: "7px 11px", fontSize: 11, lineHeight: 1.5, color: "#c8d8c0",
+                        background: isMe ? "#00ff8812" : "#0d1a14",
+                        border:     `1px solid ${isMe ? "#00ff8830" : "#1a2a1a"}`,
+                        borderRadius: isMe ? "8px 2px 8px 8px" : "2px 8px 8px 8px",
+                      }}>{msg.text}</div>
+                      <div style={{
+                        fontSize: 8, color: "#4a6a5a", marginTop: 2, letterSpacing: 1,
+                        textAlign: isMe ? "right" : "left",
+                      }}>
+                        {msg.time}
+                        {msg.to !== "ALL" && ` → ${msg.to === "ME" ? "EU" : msg.to.slice(-3)}`}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Input */}
+            <div style={{
+              padding: "8px 14px", borderTop: "1px solid #00ff8820",
+              background: "#0a0f14", display: "flex", gap: 8, alignItems: "center",
+            }}>
+              <div style={{ fontSize: 9, color: "#4a6a5a", flexShrink: 0 }}>
+                → {chatTarget === "ALL" ? "TODOS" : chatTarget.slice(-3)}
+              </div>
+              <input
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && sendMessage()}
+                placeholder="mensagem..."
+                style={{
+                  flex: 1, background: "#0d1a14", border: "1px solid #00ff8830",
+                  color: "#c8d8c0", padding: "8px 10px", fontSize: 11,
+                  borderRadius: 2, fontFamily: "inherit",
+                }}
+              />
+              <button onClick={sendMessage} style={{
+                ...S.btn(!!input.trim()),
+                padding: "8px 14px", fontSize: 13,
+              }}>▶</button>
+            </div>
+          </div>
+        )}
+
+        {/* ══ NODES ════════════════════════════════════════════ */}
+        {tab === "nodes" && (
+          <div style={{
+            height: "100%", overflowY: "auto", padding: "10px 14px",
+            display: "flex", flexDirection: "column", gap: 8,
+          }}>
+            {nodes.length === 0 && (
+              <div style={{ color: "#4a6a5a", fontSize: 10, textAlign: "center", marginTop: 60 }}>
+                nenhum nó detectado
+              </div>
+            )}
+            {nodes.map(n => (
+              <div key={n.id} style={{
+                border: "1px solid #00ff8820", borderLeft: `3px solid ${rssiColor(n.rssi)}`,
+                background: "#0a0f14", borderRadius: 2, padding: "10px 12px",
+                animation: "fadeIn 0.3s ease",
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 13, color: rssiColor(n.rssi),
+                                  fontFamily: "Rajdhani,sans-serif", fontWeight: 700, letterSpacing: 2 }}>
+                      NÓ {n.id.slice(-3)}
+                    </div>
+                    <div style={{ fontSize: 8, color: "#4a6a5a" }}>{n.id}</div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 9, color: rssiColor(n.rssi) }}>{rssiLabel(n.rssi)}</div>
+                    <div style={{ fontSize: 8, color: "#4a6a5a" }}>{n.hops === 0 ? "DIRETO" : `${n.hops} HOP`}</div>
+                    <div style={{ fontSize: 8, color: "#4a6a5a" }}>{n.lastSeen}s atrás</div>
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "5px 8px", marginBottom: 10 }}>
+                  {[
+                    ["RSSI", n.rssi + "dBm",                   rssiColor(n.rssi)],
+                    ["SATS", n.sats === 255 ? "FIXO" : n.sats, fixColor(n.sats)],
+                    ["PDOP", n.pdop,                            "#c8d8c0"],
+                    ["LAT",  n.lat.toFixed(5) + "°",            "#c8d8c0"],
+                    ["LON",  n.lon.toFixed(5) + "°",            "#c8d8c0"],
+                    ["ALT",  n.alt + "m",                       "#c8d8c0"],
+                    ["SPD",  n.speed + "km/h",                  "#c8d8c0"],
+                    ["HDG",  n.heading + "°",                   "#c8d8c0"],
+                    ["FIX",  fixLabel(n.sats),                  fixColor(n.sats)],
+                  ].map(([k, v, c]) => (
+                    <div key={k}>
+                      <div style={S.label}>{k}</div>
+                      <div style={{ ...S.value, color: c }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => { setSelectedNode(n); setTab("map"); }}
+                          style={{ ...S.btn(false), flex: 1, padding: "5px" }}>◈ MAPA</button>
+                  <button onClick={() => { setChatTarget(n.id); setTab("chat"); }}
+                          style={{ ...S.btn(false), flex: 1, padding: "5px" }}>▦ CHAT</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ══ CMD ══════════════════════════════════════════════ */}
+        {tab === "cmd" && (
+          <div style={{
+            height: "100%", overflowY: "auto", padding: "10px 14px",
+            display: "flex", flexDirection: "column", gap: 6,
+          }}>
+            <div style={{ fontSize: 9, color: "#4a6a5a", letterSpacing: 2, marginBottom: 4 }}>
+              COMANDOS RÁPIDOS
+            </div>
+
+            {/* Quick command buttons */}
+            {[
+              ["status",              "◎ STATUS"],
+              ["neighbors",           "◎ VIZINHOS"],
+              ["help",                "? AJUDA"],
+              ["calibrate",           "⊕ CALIBRAR BÚSSOLA"],
+              ["clearpos",            "✕ LIMPAR POSIÇÃO"],
+            ].map(([cmd, label]) => (
+              <button key={cmd} onClick={() => sendCmd(cmd)} style={{
+                ...S.btn(false), textAlign: "left", padding: "10px 12px",
+                fontSize: 10, letterSpacing: 1, width: "100%",
+              }}>{label}</button>
+            ))}
+
+            <div style={{ borderTop: "1px solid #00ff8820", margin: "6px 0" }} />
+            <div style={{ fontSize: 9, color: "#4a6a5a", letterSpacing: 2, marginBottom: 4 }}>
+              POSIÇÃO MANUAL
+            </div>
+
+            {/* setpos shortcut */}
+            <SetPosForm onSend={sendCmd} />
+
+            <div style={{ borderTop: "1px solid #00ff8820", margin: "6px 0" }} />
+            <div style={{ fontSize: 9, color: "#4a6a5a", letterSpacing: 2, marginBottom: 4 }}>
+              COMANDO LIVRE
+            </div>
+
+            {/* Free command input */}
+            <FreeCmd onSend={sendCmd} connected={connected} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── setpos form ───────────────────────────────────────────────
+function SetPosForm({ onSend }) {
+  const [lat, setLat] = useState("");
+  const [lon, setLon] = useState("");
+  const [alt, setAlt] = useState("0");
+  const fieldStyle = {
+    background: "#0d1a14", border: "1px solid #00ff8830",
+    color: "#c8d8c0", padding: "7px 10px", fontSize: 11,
+    borderRadius: 2, fontFamily: "inherit", width: "100%",
+  };
+  const send = () => {
+    if (!lat || !lon) return;
+    onSend(`setpos ${lat} ${lon} ${alt}`);
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 80px", gap: 6 }}>
+        <div>
+          <div style={{ fontSize: 8, color: "#4a6a5a", marginBottom: 3 }}>LATITUDE</div>
+          <input value={lat} onChange={e => setLat(e.target.value)}
+                 placeholder="-22.869" style={fieldStyle} />
+        </div>
+        <div>
+          <div style={{ fontSize: 8, color: "#4a6a5a", marginBottom: 3 }}>LONGITUDE</div>
+          <input value={lon} onChange={e => setLon(e.target.value)}
+                 placeholder="-43.136" style={fieldStyle} />
+        </div>
+        <div>
+          <div style={{ fontSize: 8, color: "#4a6a5a", marginBottom: 3 }}>ALT (m)</div>
+          <input value={alt} onChange={e => setAlt(e.target.value)}
+                 placeholder="0" style={fieldStyle} />
+        </div>
+      </div>
+      <button onClick={send} style={{
+        background: lat && lon ? "#00ff8818" : "transparent",
+        border: `1px solid ${lat && lon ? "#00ff88" : "#00ff8830"}`,
+        color: lat && lon ? "#00ff88" : "#4a6a5a",
+        padding: "8px", fontSize: 9, letterSpacing: 2,
+        cursor: "pointer", borderRadius: 2, fontFamily: "inherit",
+      }}>⊕ DEFINIR POSIÇÃO</button>
+    </div>
+  );
+}
+
+// ── free command input ────────────────────────────────────────
+function FreeCmd({ onSend, connected }) {
+  const [val, setVal] = useState("");
+  const send = () => { if (val.trim()) { onSend(val.trim()); setVal(""); } };
+  return (
+    <div style={{ display: "flex", gap: 8 }}>
+      <input
+        value={val}
+        onChange={e => setVal(e.target.value)}
+        onKeyDown={e => e.key === "Enter" && send()}
+        placeholder={connected ? "ex: send 248 teste" : "conecte o BLE primeiro"}
+        style={{
+          flex: 1, background: "#0d1a14", border: "1px solid #00ff8830",
+          color: "#c8d8c0", padding: "8px 10px", fontSize: 11,
+          borderRadius: 2, fontFamily: "inherit",
+        }}
+      />
+      <button onClick={send} style={{
+        background: val.trim() ? "#00ff8818" : "transparent",
+        border: `1px solid ${val.trim() ? "#00ff88" : "#00ff8830"}`,
+        color: val.trim() ? "#00ff88" : "#4a6a5a",
+        padding: "8px 12px", fontSize: 13, cursor: "pointer",
+        borderRadius: 2, fontFamily: "inherit",
+      }}>▶</button>
+    </div>
+  );
+}
+
+// ── Mount ─────────────────────────────────────────────────────
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<TacLoRa />);
