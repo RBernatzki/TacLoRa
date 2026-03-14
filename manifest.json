@@ -1,0 +1,13 @@
+{
+  "name": "TacLoRa",
+  "short_name": "TacLoRa",
+  "start_url": "/taclora-app/",
+  "display": "standalone",
+  "background_color": "#080c10",
+  "theme_color": "#080c10",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "icon.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
