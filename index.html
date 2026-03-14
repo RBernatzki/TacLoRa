@@ -6,17 +6,41 @@
   <meta name="theme-color" content="#080c10">
   <link rel="manifest" href="manifest.json">
   <title>TacLoRa</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { margin: 0; background: #080c10; }
+    .leaflet-container { background: #0d1a14 !important; }
+    /* Dark tile filter */
+    .leaflet-tile { filter: invert(1) hue-rotate(180deg) brightness(0.85) saturate(0.7); }
+    /* Custom marker styles */
+    .tac-marker { 
+      background: transparent; border: none;
+    }
+    .leaflet-popup-content-wrapper {
+      background: #0a0f14; border: 1px solid #00ff8840;
+      color: #c8d8c0; border-radius: 2px;
+      font-family: 'Share Tech Mono', monospace; font-size: 11px;
+    }
+    .leaflet-popup-tip { background: #0a0f14; }
+    .leaflet-popup-close-button { color: #00ff88 !important; }
+    .leaflet-control-zoom a {
+      background: #0a0f14 !important; color: #00ff88 !important;
+      border-color: #00ff8830 !important;
+    }
+    .leaflet-control-attribution {
+      background: #080c10cc !important; color: #4a6a5a !important; font-size: 8px;
+    }
+  </style>
   <script type="text/babel" src="app.jsx"></script>
 </head>
 <body>
   <div id="root"></div>
   <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js');
-    }
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
   </script>
 </body>
 </html>
