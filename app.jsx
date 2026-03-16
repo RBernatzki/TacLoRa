@@ -499,11 +499,11 @@ function TacLoRa() {
         background: "#0a0f14", display: "flex", alignItems: "center", justifyContent: "space-between",
       }}>
         <div>
-          <div style={{ display: "flex", alignItems: "center", fontSize: 15, color: "#00ff88", letterSpacing: 4, fontFamily: "Rajdhani,sans-serif", fontWeight: 700 }}>
+          <div style={{ display: "flex", alignItems: "center", fontSize: 15, color: "#ffffff", letterSpacing: 4, fontFamily: "Rajdhani,sans-serif", fontWeight: 700 }}>
             <img src="SAETE_LOGO.png" alt="SAETE Logo" style={{ height: "18px", marginRight: "8px" }} />
             SPECTRA
           </div>
-          <div style={{ fontSize: 8, color: "#4a6a5a", letterSpacing: 3, marginTop: "2px" }}>C2 - MÓDULO LoRa</div>
+          <div style={{ fontSize: 8, color: "#ffffff", letterSpacing: 3, marginTop: "2px" }}>C2 - MÓDULO LoRa</div>
         </div>
         <div style={{ textAlign: "right" }}>
           <button onClick={connected ? disconnectBLE : connectBLE} style={S.btn(connected)}>
