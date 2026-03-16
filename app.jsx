@@ -454,9 +454,9 @@ function TacLoRa() {
       }}>
         <div>
           <div style={{ fontSize: 15, color: "#00ff88", letterSpacing: 4, fontFamily: "Rajdhani,sans-serif", fontWeight: 700 }}>
-            ◈ TACLORA
+            ◈ SPECTRA
           </div>
-          <div style={{ fontSize: 8, color: "#4a6a5a", letterSpacing: 3 }}>MESH TACTICAL NETWORK</div>
+          <div style={{ fontSize: 8, color: "#4a6a5a", letterSpacing: 3 }}>TATICAL LORA NETWORK</div>
         </div>
         <div style={{ textAlign: "right" }}>
           <button onClick={connected ? disconnectBLE : connectBLE} style={S.btn(connected)}>
