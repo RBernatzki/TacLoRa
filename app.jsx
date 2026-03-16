@@ -386,10 +386,10 @@ function TacLoRa() {
       }
 
       // [ACK] Acusa recebimento de 0x00000208 MsgId=304 (0 retries)
-      const ackMatch = line.match(/\[ACK\]\s+Acusa\s+recebimento\s+de\s+(0x[0-9a-fA-F]+)/i);
+      const ackMatch = line.match(/\[ACK\]\s+Acusa\s+recebimento\s+de\s+0x([0-9a-fA-F]+)/i);
       if (ackMatch) {
-        // Como o ID já vem no formato 0x00000208, apenas garantimos que está em maiúsculo
-        const ackId = ackMatch[1].toUpperCase();
+        // Pega apenas a parte hexadecimal, coloca em maiúsculo e adiciona o "0x" minúsculo na frente
+        const ackId = "0x" + ackMatch[1].padStart(8, '0').toUpperCase();
         
         setMessages(prev => {
           // Busca de trás para frente a última mensagem que mandamos para esse nó e que ainda não tem ACK
@@ -398,7 +398,7 @@ function TacLoRa() {
           if (reversedIndex !== -1) {
             const actualIndex = prev.length - 1 - reversedIndex;
             const newMsgs = [...prev];
-            // Cria um NOVO objeto de mensagem com o ack: true para o React re-renderizar a tela
+            // Atualiza a mensagem com ack: true
             newMsgs[actualIndex] = { ...newMsgs[actualIndex], ack: true };
             return newMsgs;
           }
