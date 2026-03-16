@@ -499,7 +499,7 @@ function TacLoRa() {
             <img src="SAETE_LOGO.png" alt="SAETE Logo" style={{ height: "18px", marginRight: "8px" }} />
             SPECTRA
           </div>
-          <div style={{ fontSize: 8, color: "#4a6a5a", letterSpacing: 3, marginTop: "2px" }}>TATICAL LORA NETWORK</div>
+          <div style={{ fontSize: 8, color: "#4a6a5a", letterSpacing: 3, marginTop: "2px" }}>C2 - MÓDULO LoRa</div>
         </div>
         <div style={{ textAlign: "right" }}>
           <button onClick={connected ? disconnectBLE : connectBLE} style={S.btn(connected)}>
