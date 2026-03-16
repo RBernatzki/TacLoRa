@@ -385,20 +385,24 @@ function TacLoRa() {
         }]);
       }
 
-      // [ACK] Captura o recibo e vincula à última mensagem enviada para o respectivo nó
-      const ackMatch = line.match(/\[ACK\].*TacLoRa-([a-fA-F0-9]+)/i);
+      // [ACK] Acusa recebimento de 0x00000208 MsgId=304 (0 retries)
+      const ackMatch = line.match(/\[ACK\]\s+Acusa\s+recebimento\s+de\s+(0x[0-9a-fA-F]+)/i);
       if (ackMatch) {
-        const ackId = "0x" + ackMatch[1].padStart(8, '0').toUpperCase();
+        // Como o ID já vem no formato 0x00000208, apenas garantimos que está em maiúsculo
+        const ackId = ackMatch[1].toUpperCase();
+        
         setMessages(prev => {
-          const newMsgs = [...prev];
-          // Procura de trás para frente a última mensagem enviada para esse destino que não tenha sido ACKada
-          for (let i = newMsgs.length - 1; i >= 0; i--) {
-            if (newMsgs[i].from === "ME" && newMsgs[i].to === ackId && !newMsgs[i].ack) {
-              newMsgs[i].ack = true;
-              break;
-            }
+          // Busca de trás para frente a última mensagem que mandamos para esse nó e que ainda não tem ACK
+          const reversedIndex = prev.slice().reverse().findIndex(m => m.from === "ME" && m.to === ackId && !m.ack);
+          
+          if (reversedIndex !== -1) {
+            const actualIndex = prev.length - 1 - reversedIndex;
+            const newMsgs = [...prev];
+            // Cria um NOVO objeto de mensagem com o ack: true para o React re-renderizar a tela
+            newMsgs[actualIndex] = { ...newMsgs[actualIndex], ack: true };
+            return newMsgs;
           }
-          return newMsgs;
+          return prev;
         });
       }
 
