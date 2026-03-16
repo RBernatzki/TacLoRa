@@ -4,20 +4,6 @@
 
 const { useState, useEffect, useRef, useCallback } = React;
 
-// ─── Mock data ───────────────────────────────────────────────
-const MOCK_NODES = [
-  { id: "0x00000208", lat: -22.869036, lon: -43.136280, alt: 17, speed: 1,  heading: 45,  sats: 8, pdop: 1.2, rssi: -65, hops: 0, lastSeen: 5  },
-  { id: "0x00000248", lat: -22.871500, lon: -43.139100, alt: 22, speed: 0,  heading: 0,   sats: 6, pdop: 1.8, rssi: -82, hops: 1, lastSeen: 12 },
-  { id: "0x00000312", lat: -22.866800, lon: -43.133500, alt: 14, speed: 3,  heading: 180, sats: 9, pdop: 1.1, rssi: -71, hops: 0, lastSeen: 3  },
-];
-
-const MOCK_MESSAGES = [
-  { id: 1, from: "0x00000248", to: "ALL", text: "Posição confirmada, setor norte.", time: "14:32" },
-  { id: 2, from: "0x00000312", to: "ALL", text: "Movendo para sul, ETA 5min.",      time: "14:35" },
-  { id: 3, from: "ME",         to: "ALL", text: "Recebido. Aguardando confirmação.", time: "14:36" },
-  { id: 4, from: "0x00000248", to: "ME",  text: "Confirmado. Rota clara.",           time: "14:38" },
-];
-
 // ─── Helpers ─────────────────────────────────────────────────
 const rssiColor = r => r > -70 ? "#00ff88" : r > -90 ? "#ffd700" : "#ff4444";
 const rssiLabel = r => r > -70 ? "EXCELENTE" : r > -90 ? "BOM" : "FRACO";
@@ -237,8 +223,8 @@ function FreeCmd({ onSend, connected }) {
 // ════════════════════════════════════════════════════════════
 function TacLoRa() {
   const [tab,          setTab]          = useState("map");
-  const [nodes,        setNodes]        = useState(MOCK_NODES);
-  const [messages,     setMessages]     = useState(MOCK_MESSAGES);
+  const [nodes,        setNodes]        = useState([]);
+  const [messages,     setMessages]     = useState([]);
   const [selectedNode, setSelectedNode] = useState(null);
   const [chatTarget,   setChatTarget]   = useState("ALL");
   const [input,        setInput]        = useState("");
@@ -326,18 +312,17 @@ function TacLoRa() {
       line = line.trim();
       if (!line) return;
 
-      addLog(line); // record every line
+      addLog(line); // Regista todas as linhas no terminal do app
 
-      // [GPS] 0xID RSSI:-XXdBm Lat:X Lon:X Alt:Xm Hdg:X° Spd:Xkm/h Sats:X PDOP:X
-      const gpsMatch = line.match(
-        /\[GPS\]\s+(0x\w+)\s+\w+:(-?\d+)dBm\s+Lat:([-\d.]+)\s+Lon:([-\d.]+)\s+Alt:(-?\d+)m\s+Hdg:([\d.]+)°\s+Spd:(\d+)km\/h\s+Sats:(\d+)\s+PDOP:([\d.]+)/
-      );
+      // [GPS] 208 RSSI:-65dBm Lat:-22.869036 Lon:-43.136280 Alt:17m Hdg:45.0° Spd:1km/h Sats:8 PDOP:1.2
+      const gpsMatch = line.match(/\[GPS\]\s+([a-fA-F0-9]+)\s+\w+:(-?\d+)dBm\s+Lat:([-\d.]+)\s+Lon:([-\d.]+)\s+Alt:(-?\d+)m\s+Hdg:([\d.]+)°\s+Spd:(\d+)km\/h\s+Sats:(\d+)\s+PDOP:([\d.]+)/i);
       if (gpsMatch) {
         const [, id, rssi, lat, lon, alt, hdg, spd, sats, pdop] = gpsMatch;
+        const formattedId = "0x" + id.padStart(8, '0').toUpperCase();
         setNodes(prev => {
-          const existing = prev.find(n => n.id === id);
+          const existing = prev.find(n => n.id === formattedId);
           const updated  = {
-            id,
+            id: formattedId,
             lat:      parseFloat(lat),
             lon:      parseFloat(lon),
             alt:      parseInt(alt),
@@ -350,31 +335,33 @@ function TacLoRa() {
             lastSeen: 0,
           };
           return existing
-            ? prev.map(n => n.id === id ? updated : n)
+            ? prev.map(n => n.id === formattedId ? updated : n)
             : [...prev, updated];
         });
       }
 
-      // [PING] From 0xID RSSI:-XXdBm Hops:X
-      const pingMatch = line.match(/\[PING\]\s+From\s+(0x\w+)\s+\w+:(-?\d+)dBm\s+Hops:(\d+)/);
+      // [PING] De TacLoRa-208 RSSI:-65dBm Saltos:1
+      const pingMatch = line.match(/\[PING\]\s+De\s+TacLoRa-([a-fA-F0-9]+)\s+\w+:(-?\d+)dBm\s+Saltos:(\d+)/i);
       if (pingMatch) {
         const [, id, rssi, hops] = pingMatch;
+        const formattedId = "0x" + id.padStart(8, '0').toUpperCase();
         setNodes(prev => prev.map(n =>
-          n.id === id ? { ...n, rssi: parseInt(rssi), hops: parseInt(hops), lastSeen: 0 } : n
+          n.id === formattedId ? { ...n, rssi: parseInt(rssi), hops: parseInt(hops), lastSeen: 0 } : n
         ));
       }
 
-      // [DATA] From 0xID RSSI:-XXdBm: <message>
-      const dataMatch = line.match(/\[DATA\]\s+From\s+(0x\w+)\s+RSSI:(-?\d+)dBm:\s+(.+)/);
+      // [DATA] MSG de TacLoRa-208 : ola pessoal
+      const dataMatch = line.match(/\[DATA\]\s+MSG\s+de\s+TacLoRa-([a-fA-F0-9]+)\s+:\s+(.+)/i);
       if (dataMatch) {
-        const [, from, , text] = dataMatch;
+        const [, fromId, text] = dataMatch;
+        const formattedFrom = "0x" + fromId.padStart(8, '0').toUpperCase();
         setMessages(prev => [...prev, {
-          id: Date.now(), from, to: "ME", text: text.trim(), time: now8(),
+          id: Date.now(), from: formattedFrom, to: "ME", text: text.trim(), time: now8(),
         }]);
       }
 
-      // [TX] GPS broadcasted (fixed=X): lat, lon
-      const txMatch = line.match(/\[TX\]\s+GPS broadcasted[^:]*:\s+([-\d.]+),\s+([-\d.]+)/);
+      // [TX] GPS Enviado: Lat:-22.869036 Lon:-43.136280
+      const txMatch = line.match(/\[TX\]\s+GPS\s+Enviado:\s+Lat:([-\d.]+)\s+Lon:([-\d.]+)/i);
       if (txMatch) {
         setMyPos({ lat: parseFloat(txMatch[1]), lon: parseFloat(txMatch[2]) });
       }
@@ -467,9 +454,9 @@ function TacLoRa() {
       }}>
         <div>
           <div style={{ fontSize: 15, color: "#00ff88", letterSpacing: 4, fontFamily: "Rajdhani,sans-serif", fontWeight: 700 }}>
-            ◈ TACLORA
+            ◈ SPECTRA
           </div>
-          <div style={{ fontSize: 8, color: "#4a6a5a", letterSpacing: 3 }}>MESH TACTICAL NETWORK</div>
+          <div style={{ fontSize: 8, color: "#4a6a5a", letterSpacing: 3 }}>TATICAL LORA NETWORK</div>
         </div>
         <div style={{ textAlign: "right" }}>
           <button onClick={connected ? disconnectBLE : connectBLE} style={S.btn(connected)}>
