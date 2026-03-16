@@ -319,6 +319,11 @@ function TacLoRa() {
       if (gpsMatch) {
         const [, id, rssi, lat, lon, alt, hdg, spd, sats, pdop] = gpsMatch;
         const formattedId = "0x" + id.padStart(8, '0').toUpperCase();
+        
+        // Verifica se a linha contém também o parâmetro de distância opcional
+        const distMatch = line.match(/DIST:\s*([\d.]+[a-zA-Z]*)/i);
+        const nodeDist = distMatch ? distMatch[1] : null;
+
         setNodes(prev => {
           const existing = prev.find(n => n.id === formattedId);
           const updated  = {
@@ -332,6 +337,7 @@ function TacLoRa() {
             pdop:     parseFloat(pdop),
             rssi:     parseInt(rssi),
             hops:     existing?.hops ?? 0,
+            dist:     nodeDist || existing?.dist || null, // Mantém a antiga se não vier nova
             lastSeen: 0,
           };
           return existing
@@ -345,9 +351,23 @@ function TacLoRa() {
       if (pingMatch) {
         const [, id, rssi, hops] = pingMatch;
         const formattedId = "0x" + id.padStart(8, '0').toUpperCase();
-        setNodes(prev => prev.map(n =>
-          n.id === formattedId ? { ...n, rssi: parseInt(rssi), hops: parseInt(hops), lastSeen: 0 } : n
-        ));
+        setNodes(prev => {
+          const existing = prev.find(n => n.id === formattedId);
+          if (existing) {
+            // Se o nó já existe, apenas atualiza RSSI e Hops
+            return prev.map(n => n.id === formattedId ? { ...n, rssi: parseInt(rssi), hops: parseInt(hops), lastSeen: 0 } : n);
+          } else {
+            // Se o nó NÃO existe, cria ele baseado apenas no ping
+            return [...prev, {
+              id: formattedId,
+              lat: 0, lon: 0, alt: 0, heading: 0, speed: 0, sats: 0, pdop: 0,
+              dist: null,
+              rssi: parseInt(rssi),
+              hops: parseInt(hops),
+              lastSeen: 0,
+            }];
+          }
+        });
       }
 
       // [DATA] MSG de TacLoRa-208 : ola pessoal
@@ -453,10 +473,11 @@ function TacLoRa() {
         background: "#0a0f14", display: "flex", alignItems: "center", justifyContent: "space-between",
       }}>
         <div>
-          <div style={{ fontSize: 15, color: "#00ff88", letterSpacing: 4, fontFamily: "Rajdhani,sans-serif", fontWeight: 700 }}>
-            ◈ SPECTRA
+          <div style={{ display: "flex", alignItems: "center", fontSize: 15, color: "#00ff88", letterSpacing: 4, fontFamily: "Rajdhani,sans-serif", fontWeight: 700 }}>
+            <img src="SAETE_LOGO.png" alt="SAETE Logo" style={{ height: "18px", marginRight: "8px" }} />
+            SPECTRA
           </div>
-          <div style={{ fontSize: 8, color: "#4a6a5a", letterSpacing: 3 }}>TATICAL LORA NETWORK</div>
+          <div style={{ fontSize: 8, color: "#4a6a5a", letterSpacing: 3, marginTop: "2px" }}>TATICAL LORA NETWORK</div>
         </div>
         <div style={{ textAlign: "right" }}>
           <button onClick={connected ? disconnectBLE : connectBLE} style={S.btn(connected)}>
@@ -533,6 +554,7 @@ function TacLoRa() {
                       fontFamily: "Rajdhani,sans-serif", fontWeight: 700, letterSpacing: 2,
                     }}>NÓ {selectedNode.id.slice(-3)}</div>
                     <div style={{ fontSize: 8, color: "#4a6a5a", marginBottom: 6 }}>{selectedNode.id}</div>
+                    
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "3px 12px" }}>
                       {[
                         ["LAT",  selectedNode.lat.toFixed(6) + "°"],
@@ -551,6 +573,18 @@ function TacLoRa() {
                         </div>
                       ))}
                     </div>
+
+                    {/* Linha Tracejada de Distância (Exibida no Mapa) */}
+                    <div style={{ display: "flex", alignItems: "center", margin: "10px 0 0" }}>
+                      <div style={{ flex: 1, borderBottom: "1px dashed #00ff8840" }}></div>
+                      {selectedNode.dist && (
+                        <div style={{ fontSize: 10, color: "#00ff88", padding: "0 10px", letterSpacing: 1 }}>
+                          DIST: {selectedNode.dist}
+                        </div>
+                      )}
+                      <div style={{ flex: 1, borderBottom: "1px dashed #00ff8840" }}></div>
+                    </div>
+
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 5, marginLeft: 10 }}>
                     <button onClick={() => { setChatTarget(selectedNode.id); setTab("chat"); }}
@@ -688,7 +722,8 @@ function TacLoRa() {
                     <div style={{ fontSize: 8, color: "#4a6a5a" }}>{n.lastSeen}s atrás</div>
                   </div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "5px 8px", marginBottom: 10 }}>
+                
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "5px 8px" }}>
                   {[
                     ["RSSI", n.rssi + "dBm",                   rssiColor(n.rssi)],
                     ["SATS", n.sats === 255 ? "FIXO" : n.sats, fixColor(n.sats)],
@@ -706,6 +741,18 @@ function TacLoRa() {
                     </div>
                   ))}
                 </div>
+
+                {/* Linha Tracejada de Distância (Exibida na Aba Nós) */}
+                <div style={{ display: "flex", alignItems: "center", margin: "10px 0" }}>
+                  <div style={{ flex: 1, borderBottom: "1px dashed #00ff8840" }}></div>
+                  {n.dist && (
+                    <div style={{ fontSize: 10, color: "#00ff88", padding: "0 10px", letterSpacing: 1 }}>
+                      DIST: {n.dist}
+                    </div>
+                  )}
+                  <div style={{ flex: 1, borderBottom: "1px dashed #00ff8840" }}></div>
+                </div>
+
                 <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={() => { setSelectedNode(n); setTab("map"); }}
                           style={{ ...S.btn(false), flex: 1, padding: "5px" }}>◈ MAPA</button>
