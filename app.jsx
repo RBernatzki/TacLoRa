@@ -11,6 +11,9 @@ const fixColor  = s => s >= 7  ? "#00ff88" : s >= 4   ? "#ffd700" : "#ff4444";
 const fixLabel  = s => s >= 7  ? "FIX 3D"  : s >= 4   ? "FIX 2D"  : "SEM FIX";
 const now8      = () => new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 
+// Retorna vermelho se for apenas ping, senão a cor baseada no RSSI
+const nodeColor = n => (n && n.pingOnly) ? "#ff4444" : rssiColor(n?.rssi ?? -120);
+
 // ─── BLE UUIDs ───────────────────────────────────────────────
 const BLE_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const BLE_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
@@ -59,7 +62,7 @@ function MapView({ nodes, selectedNode, onSelectNode, myPos }) {
 
   const popupHTML = n => `
     <div style="font-family:'Share Tech Mono',monospace;line-height:1.7;font-size:11px">
-      <b style="color:${rssiColor(n.rssi)};letter-spacing:2px;font-size:13px">NÓ ${n.id.slice(-3)}</b>
+      <b style="color:${nodeColor(n)};letter-spacing:2px;font-size:13px">NÓ ${n.id.slice(-3)}</b>
       <div style="color:#4a6a5a;font-size:9px;margin-bottom:6px">${n.id}</div>
       <span style="color:#4a6a5a">LAT  </span>${n.lat.toFixed(6)}°<br/>
       <span style="color:#4a6a5a">LON  </span>${n.lon.toFixed(6)}°<br/>
@@ -73,6 +76,8 @@ function MapView({ nodes, selectedNode, onSelectNode, myPos }) {
       &nbsp;&nbsp;<span style="color:#4a6a5a">PDOP </span>${n.pdop}<br/>
       <span style="color:#4a6a5a">FIX  </span>
         <span style="color:${fixColor(n.sats)}">${fixLabel(n.sats)}</span>
+      
+      ${n.dist ? `<div style="text-align:center; color:#00ff88; font-size:10px; margin-top:8px; border-top:1px dashed #00ff8840; padding-top:4px; letter-spacing:1px">DIST: ${n.dist}</div>` : ""}
     </div>`;
 
   // Init Leaflet once
@@ -109,7 +114,7 @@ function MapView({ nodes, selectedNode, onSelectNode, myPos }) {
           </div>`);
       }
       nodes.forEach(n => {
-        if (!n.lat || !n.lon) return;
+        if (n.lat === 0 && n.lon === 0) return; // Ignora nós sem coordenada
         linesRef.current.push(
           L.polyline([[myPos.lat, myPos.lon], [n.lat, n.lon]], {
             color: rssiColor(n.rssi), weight: 1.5, opacity: 0.3, dashArray: "5 9",
@@ -119,8 +124,8 @@ function MapView({ nodes, selectedNode, onSelectNode, myPos }) {
     }
 
     nodes.forEach(n => {
-      if (!n.lat || !n.lon) return;
-      const icon = makeIcon(rssiColor(n.rssi), false, n.speed > 0 ? n.heading : null);
+      if (n.lat === 0 && n.lon === 0) return; // Ignora nós sem coordenada
+      const icon = makeIcon(nodeColor(n), false, n.speed > 0 ? n.heading : null);
       if (markersRef.current[n.id]) {
         markersRef.current[n.id].setLatLng([n.lat, n.lon]).setIcon(icon).setPopupContent(popupHTML(n));
       } else {
@@ -140,7 +145,7 @@ function MapView({ nodes, selectedNode, onSelectNode, myPos }) {
 
   // Pan to selected
   useEffect(() => {
-    if (!selectedNode || !leaflet.current) return;
+    if (!selectedNode || !leaflet.current || (selectedNode.lat === 0 && selectedNode.lon === 0)) return;
     leaflet.current.setView([selectedNode.lat, selectedNode.lon], 17, { animate: true });
     markersRef.current[selectedNode.id]?.openPopup();
   }, [selectedNode]);
@@ -314,13 +319,11 @@ function TacLoRa() {
 
       addLog(line); // Regista todas as linhas no terminal do app
 
-      // [GPS] 208 RSSI:-65dBm Lat:-22.869036 Lon:-43.136280 Alt:17m Hdg:45.0° Spd:1km/h Sats:8 PDOP:1.2
+      // [GPS] 208 RSSI:-65dBm Lat:-22.869036 Lon:-43.136280 ...
       const gpsMatch = line.match(/\[GPS\]\s+([a-fA-F0-9]+)\s+\w+:(-?\d+)dBm\s+Lat:([-\d.]+)\s+Lon:([-\d.]+)\s+Alt:(-?\d+)m\s+Hdg:([\d.]+)°\s+Spd:(\d+)km\/h\s+Sats:(\d+)\s+PDOP:([\d.]+)/i);
       if (gpsMatch) {
         const [, id, rssi, lat, lon, alt, hdg, spd, sats, pdop] = gpsMatch;
         const formattedId = "0x" + id.padStart(8, '0').toUpperCase();
-        
-        // Verifica se a linha contém também o parâmetro de distância opcional
         const distMatch = line.match(/DIST:\s*([\d.]+[a-zA-Z]*)/i);
         const nodeDist = distMatch ? distMatch[1] : null;
 
@@ -337,8 +340,9 @@ function TacLoRa() {
             pdop:     parseFloat(pdop),
             rssi:     parseInt(rssi),
             hops:     existing?.hops ?? 0,
-            dist:     nodeDist || existing?.dist || null, // Mantém a antiga se não vier nova
+            dist:     nodeDist || existing?.dist || null,
             lastSeen: 0,
+            pingOnly: false, // Node tem GPS valido, sai do estado "vermelho"
           };
           return existing
             ? prev.map(n => n.id === formattedId ? updated : n)
@@ -354,10 +358,10 @@ function TacLoRa() {
         setNodes(prev => {
           const existing = prev.find(n => n.id === formattedId);
           if (existing) {
-            // Se o nó já existe, apenas atualiza RSSI e Hops
+            // Mantém o status de pingOnly existente (se já tiver GPS será false, senão true)
             return prev.map(n => n.id === formattedId ? { ...n, rssi: parseInt(rssi), hops: parseInt(hops), lastSeen: 0 } : n);
           } else {
-            // Se o nó NÃO existe, cria ele baseado apenas no ping
+            // Cria nó apenas via PING - fica "vermelho" e não aparece no mapa
             return [...prev, {
               id: formattedId,
               lat: 0, lon: 0, alt: 0, heading: 0, speed: 0, sats: 0, pdop: 0,
@@ -365,6 +369,7 @@ function TacLoRa() {
               rssi: parseInt(rssi),
               hops: parseInt(hops),
               lastSeen: 0,
+              pingOnly: true, // Tag que colore de vermelho
             }];
           }
         });
@@ -376,8 +381,29 @@ function TacLoRa() {
         const [, fromId, text] = dataMatch;
         const formattedFrom = "0x" + fromId.padStart(8, '0').toUpperCase();
         setMessages(prev => [...prev, {
-          id: Date.now(), from: formattedFrom, to: "ME", text: text.trim(), time: now8(),
+          id: Date.now(), from: formattedFrom, to: "ME", text: text.trim(), time: now8(), ack: false
         }]);
+      }
+
+      // [ACK] Acusa recebimento de 0x00000208 MsgId=304 (0 retries)
+      const ackMatch = line.match(/\[ACK\]\s+Acusa\s+recebimento\s+de\s+0x([0-9a-fA-F]+)/i);
+      if (ackMatch) {
+        // Pega apenas a parte hexadecimal, coloca em maiúsculo e adiciona o "0x" minúsculo na frente
+        const ackId = "0x" + ackMatch[1].padStart(8, '0').toUpperCase();
+        
+        setMessages(prev => {
+          // Busca de trás para frente a última mensagem que mandamos para esse nó e que ainda não tem ACK
+          const reversedIndex = prev.slice().reverse().findIndex(m => m.from === "ME" && m.to === ackId && !m.ack);
+          
+          if (reversedIndex !== -1) {
+            const actualIndex = prev.length - 1 - reversedIndex;
+            const newMsgs = [...prev];
+            // Atualiza a mensagem com ack: true
+            newMsgs[actualIndex] = { ...newMsgs[actualIndex], ack: true };
+            return newMsgs;
+          }
+          return prev;
+        });
       }
 
       // [TX] GPS Enviado: Lat:-22.869036 Lon:-43.136280
@@ -393,7 +419,7 @@ function TacLoRa() {
     const text = input.trim();
     if (!text) return;
     sendBLE(chatTarget === "ALL" ? `broadcast ${text}` : `send ${chatTarget.slice(-3)} ${text}`);
-    setMessages(prev => [...prev, { id: Date.now(), from: "ME", to: chatTarget, text, time: now8() }]);
+    setMessages(prev => [...prev, { id: Date.now(), from: "ME", to: chatTarget, text, time: now8(), ack: false }]);
     setInput("");
   };
 
@@ -473,11 +499,11 @@ function TacLoRa() {
         background: "#0a0f14", display: "flex", alignItems: "center", justifyContent: "space-between",
       }}>
         <div>
-          <div style={{ display: "flex", alignItems: "center", fontSize: 15, color: "#00ff88", letterSpacing: 4, fontFamily: "Rajdhani,sans-serif", fontWeight: 700 }}>
+          <div style={{ display: "flex", alignItems: "center", fontSize: 15, color: "#ffffff", letterSpacing: 4, fontFamily: "Rajdhani,sans-serif", fontWeight: 700 }}>
             <img src="SAETE_LOGO.png" alt="SAETE Logo" style={{ height: "18px", marginRight: "8px" }} />
             SPECTRA
           </div>
-          <div style={{ fontSize: 8, color: "#4a6a5a", letterSpacing: 3, marginTop: "2px" }}>TATICAL LORA NETWORK</div>
+          <div style={{ fontSize: 8, color: "#ffffff", letterSpacing: 3, marginTop: "2px" }}>C2 - MÓDULO LoRa</div>
         </div>
         <div style={{ textAlign: "right" }}>
           <button onClick={connected ? disconnectBLE : connectBLE} style={S.btn(connected)}>
@@ -500,15 +526,17 @@ function TacLoRa() {
             onClick={() => { setSelectedNode(n); setTab("map"); }}
             style={{
               flex: "0 0 auto", cursor: "pointer", minWidth: 72,
-              border:     `1px solid ${rssiColor(n.rssi)}${selectedNode?.id === n.id ? "cc" : "44"}`,
-              background:  selectedNode?.id === n.id ? rssiColor(n.rssi) + "14" : "transparent",
+              border:     `1px solid ${nodeColor(n)}${selectedNode?.id === n.id ? "cc" : "44"}`,
+              background:  selectedNode?.id === n.id ? nodeColor(n) + "14" : "transparent",
               padding: "4px 8px", borderRadius: 2, animation: "fadeIn 0.3s ease",
             }}>
-            <div style={{ fontSize: 9, color: rssiColor(n.rssi), letterSpacing: 1 }}>
+            <div style={{ fontSize: 9, color: nodeColor(n), letterSpacing: 1 }}>
               {n.hops === 0 ? "◉" : "◎"} {n.id.slice(-3)}
             </div>
             <div style={{ fontSize: 8, color: "#4a6a5a" }}>{n.rssi}dBm</div>
-            <div style={{ fontSize: 8, color: fixColor(n.sats) }}>{fixLabel(n.sats)}</div>
+            <div style={{ fontSize: 8, color: n.pingOnly ? "#ff4444" : fixColor(n.sats) }}>
+              {n.pingOnly ? "S/ GPS" : fixLabel(n.sats)}
+            </div>
           </div>
         ))}
         {nodes.length === 0 && (
@@ -542,7 +570,7 @@ function TacLoRa() {
               <MapView nodes={nodes} selectedNode={selectedNode}
                        onSelectNode={setSelectedNode} myPos={myPos} />
             </div>
-            {selectedNode && (
+            {selectedNode && selectedNode.lat !== 0 && selectedNode.lon !== 0 && (
               <div style={{
                 padding: "10px 14px", borderTop: "1px solid #00ff8820",
                 background: "#0a0f14", animation: "fadeIn 0.2s ease",
@@ -550,7 +578,7 @@ function TacLoRa() {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div style={{ flex: 1 }}>
                     <div style={{
-                      fontSize: 13, color: rssiColor(selectedNode.rssi),
+                      fontSize: 13, color: nodeColor(selectedNode),
                       fontFamily: "Rajdhani,sans-serif", fontWeight: 700, letterSpacing: 2,
                     }}>NÓ {selectedNode.id.slice(-3)}</div>
                     <div style={{ fontSize: 8, color: "#4a6a5a", marginBottom: 6 }}>{selectedNode.id}</div>
@@ -574,7 +602,6 @@ function TacLoRa() {
                       ))}
                     </div>
 
-                    {/* Linha Tracejada de Distância (Exibida no Mapa) */}
                     <div style={{ display: "flex", alignItems: "center", margin: "10px 0 0" }}>
                       <div style={{ flex: 1, borderBottom: "1px dashed #00ff8840" }}></div>
                       {selectedNode.dist && (
@@ -593,6 +620,11 @@ function TacLoRa() {
                             style={S.btn(false)}>✕ FECHAR</button>
                   </div>
                 </div>
+              </div>
+            )}
+            {selectedNode && selectedNode.pingOnly && (
+              <div style={{ padding: "10px", background: "#0a0f14", color: "#ff4444", textAlign: "center", fontSize: 10 }}>
+                NÓ {selectedNode.id.slice(-3)} APENAS PING (SEM COORDENADAS PARA EXIBIR NO MAPA)
               </div>
             )}
           </div>
@@ -625,8 +657,7 @@ function TacLoRa() {
               )}
               {filteredMessages.map(msg => {
                 const isMe   = msg.from === "ME";
-                const nColor = isMe ? "#00ff88"
-                  : rssiColor(nodes.find(n => n.id === msg.from)?.rssi ?? -120);
+                const nColor = isMe ? "#00ff88" : nodeColor(nodes.find(n => n.id === msg.from));
                 return (
                   <div key={msg.id} style={{
                     display: "flex", flexDirection: isMe ? "row-reverse" : "row",
@@ -652,12 +683,20 @@ function TacLoRa() {
                         border:      `1px solid ${isMe ? "#00ff8830" : "#1a2a1a"}`,
                         borderRadius: isMe ? "8px 2px 8px 8px" : "2px 8px 8px 8px",
                       }}>{msg.text}</div>
+                      
+                      {/* Área da Hora + Destino + Checkmark (ACK) */}
                       <div style={{
                         fontSize: 8, color: "#4a6a5a", marginTop: 2, letterSpacing: 1,
-                        textAlign: isMe ? "right" : "left",
+                        textAlign: isMe ? "right" : "left", display: "flex", alignItems: "center", justifyContent: isMe ? "flex-end" : "flex-start"
                       }}>
                         {msg.time}
                         {msg.to !== "ALL" && ` → ${msg.to === "ME" ? "EU" : msg.to.slice(-3)}`}
+                        {/* Se a mensagem for "Minha", exibe se o destino confirmou */}
+                        {isMe && msg.to !== "ALL" && (
+                          <span style={{ color: msg.ack ? "#00ff88" : "#4a6a5a", marginLeft: 6, fontWeight: msg.ack ? "bold" : "normal" }}>
+                            {msg.ack ? "✓✓" : "✓"}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -704,14 +743,14 @@ function TacLoRa() {
             )}
             {nodes.map(n => (
               <div key={n.id} style={{
-                border: "1px solid #00ff8820", borderLeft: `3px solid ${rssiColor(n.rssi)}`,
+                border: "1px solid #00ff8820", borderLeft: `3px solid ${nodeColor(n)}`,
                 background: "#0a0f14", borderRadius: 2, padding: "10px 12px",
                 animation: "fadeIn 0.3s ease",
               }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
                   <div>
                     <div style={{
-                      fontSize: 13, color: rssiColor(n.rssi),
+                      fontSize: 13, color: nodeColor(n),
                       fontFamily: "Rajdhani,sans-serif", fontWeight: 700, letterSpacing: 2,
                     }}>NÓ {n.id.slice(-3)}</div>
                     <div style={{ fontSize: 8, color: "#4a6a5a" }}>{n.id}</div>
@@ -726,14 +765,14 @@ function TacLoRa() {
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "5px 8px" }}>
                   {[
                     ["RSSI", n.rssi + "dBm",                   rssiColor(n.rssi)],
-                    ["SATS", n.sats === 255 ? "FIXO" : n.sats, fixColor(n.sats)],
+                    ["SATS", n.sats === 255 ? "FIXO" : n.sats, n.pingOnly ? "#ff4444" : fixColor(n.sats)],
                     ["PDOP", n.pdop,                            "#c8d8c0"],
-                    ["LAT",  n.lat.toFixed(5) + "°",            "#c8d8c0"],
-                    ["LON",  n.lon.toFixed(5) + "°",            "#c8d8c0"],
-                    ["ALT",  n.alt + "m",                       "#c8d8c0"],
-                    ["SPD",  n.speed + "km/h",                  "#c8d8c0"],
-                    ["HDG",  n.heading + "°",                   "#c8d8c0"],
-                    ["FIX",  fixLabel(n.sats),                  fixColor(n.sats)],
+                    ["LAT",  n.pingOnly ? "---" : n.lat.toFixed(5) + "°", "#c8d8c0"],
+                    ["LON",  n.pingOnly ? "---" : n.lon.toFixed(5) + "°", "#c8d8c0"],
+                    ["ALT",  n.pingOnly ? "---" : n.alt + "m",            "#c8d8c0"],
+                    ["SPD",  n.pingOnly ? "---" : n.speed + "km/h",       "#c8d8c0"],
+                    ["HDG",  n.pingOnly ? "---" : n.heading + "°",        "#c8d8c0"],
+                    ["FIX",  n.pingOnly ? "P/ GPS" : fixLabel(n.sats),    n.pingOnly ? "#ff4444" : fixColor(n.sats)],
                   ].map(([k, v, c]) => (
                     <div key={k}>
                       <div style={S.label}>{k}</div>
@@ -742,7 +781,6 @@ function TacLoRa() {
                   ))}
                 </div>
 
-                {/* Linha Tracejada de Distância (Exibida na Aba Nós) */}
                 <div style={{ display: "flex", alignItems: "center", margin: "10px 0" }}>
                   <div style={{ flex: 1, borderBottom: "1px dashed #00ff8840" }}></div>
                   {n.dist && (
@@ -755,7 +793,8 @@ function TacLoRa() {
 
                 <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={() => { setSelectedNode(n); setTab("map"); }}
-                          style={{ ...S.btn(false), flex: 1, padding: "5px" }}>◈ MAPA</button>
+                          style={{ ...S.btn(false), flex: 1, padding: "5px", opacity: n.pingOnly ? 0.3 : 1 }}
+                          disabled={n.pingOnly}>◈ MAPA</button>
                   <button onClick={() => { setChatTarget(n.id); setTab("chat"); }}
                           style={{ ...S.btn(false), flex: 1, padding: "5px" }}>▦ CHAT</button>
                 </div>
